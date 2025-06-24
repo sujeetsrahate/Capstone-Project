@@ -1,0 +1,139 @@
+# Docker
+# Build a Docker image
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- main
+
+variables:
+  dockerRegistryServiceConnection: 'yogcregistry'  # <-- Your ACR service connection name here
+  containerRegistry: 'yogcregistry.azurecr.io'
+  backendImageRepository: 'backend/event-management'
+  frontendImageRepository: 'frontend/event-dashboard'
+  backendDockerfilePath: 'Backend-Java/Event_Managment/Dockerfile'
+  frontendDockerfilePath: 'Frontend-ReactJs/event-management-dashboard/Dockerfile'
+  # SNYK_TOKEN: 'e9ddd1c7-6f9f-4262-8ede-123e8d4e7aac'
+  tag: '$(Build.BuildId)'
+  vmImageName: 'ubuntu-latest'
+
+stages:
+- stage: Build_Frontend
+  displayName: Build and Push Frontend Image
+  jobs:
+  - job: BuildFrontend
+    pool:
+      name: Default
+    steps:
+    - checkout: self
+    - task: Docker@2
+      displayName: Build and push Frontend image
+      inputs:
+        command: buildAndPush
+        containerRegistry: $(dockerRegistryServiceConnection)
+        repository: $(containerRegistry)/$(frontendImageRepository)
+        dockerfile: $(frontendDockerfilePath)
+        tags: $(tag)
+
+- stage: TrivyScan
+  displayName: Run Trivy Scan on Image
+  # dependsOn: BuildAndPushImage
+  # condition: succeeded()
+  jobs:
+  - job: TrivyScan
+    displayName: Scan Docker Image for Vulnerabilities
+    pool:
+      name: Default
+    steps:
+    - task: Bash@3
+      displayName: "Install Trivy"
+      inputs:
+        targetType: inline
+        script: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          
+    - task: Bash@3
+      displayName: "Run Trivy Scan"
+      inputs:
+        targetType: inline
+        script: |
+          ./bin/trivy image --severity HIGH,CRITICAL,MEDIUM --ignore-unfixed yogeshacr1.azurecr.io/yogeshacr1.azurecr.io/frontend/event-dashboard:36
+
+          # Optionally, fail the build if vulnerabilities are found
+          if [[ $? -ne 0 ]]; then
+            echo "Trivy found vulnerabilities, failing the build."
+            exit 1
+          fi        
+
+- stage: Security_Scan
+  displayName: 'security scan with snyk '
+  jobs:
+    - job: SecurityScan
+      displayName: Run Snyk for SCM
+      dependsOn: []
+      pool:
+        name: Default
+      steps:
+        - task: NodeTool@0
+          inputs:
+            versionSpec: '20.x'
+          displayName: 'Ensure Node.js for Snyk'
+
+        - script: |
+            echo "Installing Snyk CLI..."
+            npm install -g snyk
+          displayName: 'Install Snyk CLI'
+
+        - script: |
+            echo "Authenticating with Snyk..."
+            snyk auth $(SNYK_TOKEN)
+          env:
+            SNYK_TOKEN: $(SNYK_TOKEN)
+          displayName: 'Authenticate Snyk'
+
+        - script: |
+            snyk test --all-projects --severity-threshold=medium --json > snyk-report.json
+            cat snyk-report.json
+          displayName: 'Run Snyk Test'
+
+
+- stage: DeployToAKS1
+  displayName: 'Deploy to AKS1'
+  jobs:
+  - job: Deploy
+    displayName: 'Deploy Backend and Frontend Services'
+    pool:
+      name: 'Default'
+    steps:
+    - task: Kubernetes@1
+      displayName: 'Apply Kubernetes Manifests'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: 'Subscription _ UST(1674f375-e996-4423-bd25-e0e8f6e76d13)'  # Your ARM service connection
+        azureResourceGroup: 'yogesh-caps-rg'         # Your resource group
+        kubernetesCluster: 'aks-1'  # Replace with actual cluster name
+        command: apply
+        useClusterAdmin: true
+        arguments: >
+          -f Kubernetes/react-event-deploy.yaml
+          -f Kubernetes/react-event-service.yaml
+
+- stage: DeployToAKS2
+  displayName: 'Deploy to AKS2'
+  jobs:
+  - job: Deploy
+    displayName: 'Deploy Backend and Frontend Services'
+    pool:
+      name: 'Default'
+    steps:
+    - task: Kubernetes@1
+      displayName: 'Apply Kubernetes Manifests'
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: 'Subscription _ UST(1674f375-e996-4423-bd25-e0e8f6e76d13)'  # Your ARM service connection
+        azureResourceGroup: 'yogesh-caps-rg'         # Your resource group
+        kubernetesCluster: 'aks-2'  # Replace with actual cluster name
+        command: apply
+        useClusterAdmin: true
+        arguments: >
+          -f Kubernetes/react-event-deploy.yaml
+          -f Kubernetes/react-event-service.yaml
