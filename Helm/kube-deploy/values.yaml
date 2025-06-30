@@ -1,9 +1,0 @@
-images:
- - name: frontend
-   image: yogeshtestacr.azurecr.io/frontend
-   namespace: helm-deployment
-   port: 80
- - name: backend
-   image: yogeshtestacr.azurecr.io/backend
-   namespace: helm-deployment
-   port: 8080
